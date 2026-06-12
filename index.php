@@ -10,6 +10,74 @@ const BULK_LIMIT  = 20;
 const TITLE_MAX   = 120;
 const URL_TIMEOUT = 8;
 
+// ════════════════════════════════════════════════════
+// DETEKSI SERVER DARI URL
+// ════════════════════════════════════════════════════
+
+/**
+ * Deteksi server dari URL video secara best-effort.
+ * Prioritas: path/domain pattern → fallback round-robin via session counter.
+ *
+ * Mapping (sesuaikan jika CDN berubah):
+ *   s1 → cdn.slicedrive.com, vidoycdn.b-cdn.net, streamxx.site, edge1-*
+ *   s2 → (tidak ada domain eksklusif saat ini → fallback ke counter)
+ *   s3 → video.zig.ht
+ *   Lainnya → round-robin s1/s2/s3
+ */
+function detectServerFromUrl(string $url): string
+{
+    $host = strtolower(parse_url($url, PHP_URL_HOST) ?? '');
+    $path = strtolower(parse_url($url, PHP_URL_PATH) ?? '');
+
+    // s3 — domain eksklusif
+    if (str_contains($host, 'video.zig.ht')) return 's3';
+
+    // s1 — domain eksklusif
+    if (
+        str_contains($host, 'vidoycdn.b-cdn.net') ||
+        str_contains($host, 'streamxx.site')      ||
+        str_contains($host, 'edge1-waw')           ||
+        str_contains($host, 'r66nv9ed.com')        ||
+        str_contains($host, 'image2url.com')       ||
+        str_contains($host, 'imgvdy.com')          ||
+        str_contains($host, 'googleapis.com')
+    ) return 's1';
+
+    // Domain shared (cdn.videy.co, cdn.slicedrive.com, dll)
+    // → round-robin berbasis session counter agar terdistribusi merata
+    return roundRobinServer();
+}
+
+/**
+ * Round-robin s1→s2→s3→s1 berbasis counter di session.
+ * Memastikan distribusi merata untuk URL dengan domain yang sama.
+ */
+function roundRobinServer(): string
+{
+    if (session_status() === PHP_SESSION_NONE) @session_start();
+    $counter = ($_SESSION['rr_counter'] ?? 0) % 3;
+    $_SESSION['rr_counter'] = $counter + 1;
+    return ['s1', 's2', 's3'][$counter];
+}
+
+/**
+ * Label server untuk ditampilkan di output.
+ */
+function serverLabel(string $code): string
+{
+    if (strlen($code) !== 15) return '';
+    $srv   = substr($code, 0, 2);
+    $month = decodeMonth(substr($code, 2, 2));
+    $year  = (int) date('Y');  // estimasi — cukup untuk label
+    $months = [
+        1=>'Jan',2=>'Feb',3=>'Mar',4=>'Apr',5=>'Mei',6=>'Jun',
+        7=>'Jul',8=>'Agt',9=>'Sep',10=>'Okt',11=>'Nov',12=>'Des',
+    ];
+    $mon = $months[$month] ?? '?';
+    $serverName = strtoupper($srv);  // S1 / S2 / S3
+    return "[{$serverName} · {$mon} {$year}]";
+}
+
 // ── Helper: sanitasi mode ──────────────────────────────────────
 function resolveMode(): string
 {
@@ -20,21 +88,19 @@ function resolveMode(): string
 // ── Validasi URL video ─────────────────────────────────────────
 function validateVideoUrl(string $url): bool
 {
-    static $videoExts = ['mp4','m4v','webm','ogg','ogv','mov','avi','mkv','mpeg','ts','m3u8'];
+    static $videoExts  = ['mp4','m4v','webm','ogg','ogv','mov','avi','mkv','mpeg','ts','m3u8'];
     static $videoMimes = [
-    'video/mp4','video/webm','video/ogg','video/quicktime',
-    'video/x-msvideo','video/x-matroska','video/mpeg','video/mp2t',
-    'application/octet-stream',
-    'application/vnd.apple.mpegurl',  // ← tambah ini
-    'application/x-mpegurl',          // ← dan ini
-    'audio/mpegurl',                  // ← dan ini
-];
+        'video/mp4','video/webm','video/ogg','video/quicktime',
+        'video/x-msvideo','video/x-matroska','video/mpeg','video/mp2t',
+        'application/octet-stream',
+        'application/vnd.apple.mpegurl',
+        'application/x-mpegurl',
+        'audio/mpegurl',
+    ];
 
-    // Cek ekstensi lebih dulu (cepat, tanpa HTTP request)
     $ext = strtolower(pathinfo(parse_url($url, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION));
     if (in_array($ext, $videoExts, true)) return true;
 
-    // Fallback: HEAD request untuk cek Content-Type
     $ctx = stream_context_create([
         'http' => [
             'method'          => 'HEAD',
@@ -44,7 +110,7 @@ function validateVideoUrl(string $url): bool
             'user_agent'      => 'Mozilla/5.0 (compatible; VidShare/1.0)',
             'ignore_errors'   => true,
         ],
-        'ssl'  => ['verify_peer' => true, 'verify_peer_name' => true],
+        'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
     ]);
 
     $headers = @get_headers($url, true, $ctx);
@@ -64,6 +130,7 @@ function validateVideoUrl(string $url): bool
 // ── State ──────────────────────────────────────────────────────
 $message       = '';
 $generated_url = '';
+$generated_label = '';
 $error         = '';
 $bulk_results  = [];
 $active_mode   = resolveMode();
@@ -84,11 +151,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $active_mode === 'single') {
         if ($existing) {
             $code = $existing['code'];
         } else {
-            $code = generateUniqueCode();
+            $server = detectServerFromUrl($mp4_url);
+            $code   = generateUniqueCode($server);
             saveVideo($code, $mp4_url, $title);
         }
-        $generated_url = getBaseUrl() . '/' . $code;
-        $message = 'Player berhasil dibuat!';
+        $generated_url   = getBaseUrl() . '/' . $code;
+        $generated_label = serverLabel($code);
+        $message         = 'Player berhasil dibuat!';
     }
 }
 
@@ -125,7 +194,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $active_mode === 'bulk') {
             if ($existing) {
                 $code = $existing['code'];
             } else {
-                $code = generateUniqueCode();
+                $server = detectServerFromUrl($entry_url);
+                $code   = generateUniqueCode($server);
                 saveVideo($code, $entry_url, $entry_title);
             }
 
@@ -133,6 +203,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $active_mode === 'bulk') {
                 'url'        => $entry_url,
                 'title'      => $entry_title,
                 'player_url' => getBaseUrl() . '/' . $code,
+                'label'      => serverLabel($code),
                 'status'     => 'ok',
             ];
         }
@@ -183,7 +254,8 @@ textarea{min-height:150px;line-height:1.6}
 .btn-spinner{display:none;width:16px;height:16px;border:2px solid rgba(8,10,15,.3);border-top-color:#080a0f;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .result{margin-top:1.5rem;background:rgba(71,255,178,.05);border:1px solid rgba(71,255,178,.2);border-radius:10px;padding:1.25rem;animation:fadeUp .3s ease}
-.result-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:var(--success);margin-bottom:.6rem}
+.result-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:var(--success);margin-bottom:.4rem}
+.result-meta{font-size:.7rem;color:var(--muted);margin-bottom:.7rem;letter-spacing:.05em}
 .result-url{display:flex;align-items:center;gap:.5rem}
 .result-url a{flex:1;color:var(--text);text-decoration:none;font-size:.85rem;word-break:break-all;transition:color .15s}
 .result-url a:hover{color:var(--success)}
@@ -201,6 +273,7 @@ textarea{min-height:150px;line-height:1.6}
 .bulk-item.error .bulk-badge{color:var(--error)}
 .bulk-item-body{flex:1;min-width:0}
 .bulk-item-title{font-size:.8rem;color:var(--muted);margin-bottom:.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bulk-item-meta{font-size:.68rem;color:var(--muted);opacity:.6;margin-bottom:.2rem;letter-spacing:.04em}
 .bulk-item-url{display:flex;align-items:center;gap:.5rem}
 .bulk-item-url a{color:var(--text);text-decoration:none;font-size:.82rem;word-break:break-all;transition:color .15s}
 .bulk-item-url a:hover{color:var(--success)}
@@ -274,6 +347,9 @@ textarea{min-height:150px;line-height:1.6}
         <?php if ($generated_url): ?>
         <div class="result">
           <div class="result-label">✓ <?= htmlspecialchars($message) ?></div>
+          <?php if ($generated_label): ?>
+          <div class="result-meta"><?= htmlspecialchars($generated_label) ?></div>
+          <?php endif; ?>
           <div class="result-url">
             <a href="<?= htmlspecialchars($generated_url) ?>" target="_blank" id="generatedUrl">
               <?= htmlspecialchars($generated_url) ?>
@@ -326,6 +402,9 @@ textarea{min-height:150px;line-height:1.6}
             <div class="bulk-item-body">
               <?php if ($r['status'] === 'ok'): ?>
                 <div class="bulk-item-title"><?= htmlspecialchars($r['title']) ?></div>
+                <?php if (!empty($r['label'])): ?>
+                <div class="bulk-item-meta"><?= htmlspecialchars($r['label']) ?></div>
+                <?php endif; ?>
                 <div class="bulk-item-url">
                   <a href="<?= htmlspecialchars($r['player_url']) ?>" target="_blank">
                     <?= htmlspecialchars($r['player_url']) ?>
@@ -406,7 +485,7 @@ function handleBulkSubmit(e) {
   setLoading('bulkForm', true, `Memproses ${n} URL…`);
 }
 
-// ── Generic loading state (FIXED) ────────────────────────────
+// ── Generic loading state ─────────────────────────────────────
 function setLoading(formId, on, label) {
   const isBulk  = formId === 'bulkForm';
   const btn     = document.getElementById(isBulk ? 'bulkSubmitBtn' : 'submitBtn');
