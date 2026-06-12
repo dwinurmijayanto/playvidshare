@@ -1,0 +1,70 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "*.php", "use": "vercel-php" },
+    { "src": "api/save.php", "use": "vercel-php" },
+    { "src": "includes/helpers.php", "use": "vercel-php" },
+    { "src": "includes/storage.php", "use": "vercel-php" }
+  ],
+  "routes": [
+    {
+      "src": "/api/save\\.php",
+      "dest": "/api/save.php"
+    },
+    {
+      "src": "/api_save\\.php",
+      "dest": "/api_save.php"
+    },
+    {
+      "src": "/debug_full\\.php",
+      "dest": "/debug_full.php"
+    },
+    {
+      "src": "/debug\\.php",
+      "dest": "/debug.php"
+    },
+    {
+      "src": "/dood_resolver\\.php",
+      "dest": "/dood_resolver.php"
+    },
+    {
+      "src": "/generate_thumb\\.php",
+      "dest": "/generate_thumb.php"
+    },
+    {
+      "src": "/player\\.php",
+      "dest": "/player.php"
+    },
+    {
+      "src": "/router\\.php",
+      "dest": "/router.php"
+    },
+    {
+      "src": "/stream\\.php",
+      "dest": "/stream.php"
+    },
+    {
+      "src": "/thumb\\.php",
+      "dest": "/thumb.php"
+    },
+    {
+      "src": "/video\\.php",
+      "dest": "/video.php"
+    },
+    {
+      "src": "/config\\.php",
+      "dest": "/config.php"
+    },
+    {
+      "src": "/",
+      "dest": "/index.php"
+    },
+    {
+      "src": "/(.*)\\.php",
+      "dest": "/$1.php"
+    }
+  ],
+  "env": {
+    "PHP_INI_SCAN_DIR": "/var/task"
+  }
+}
