@@ -1,68 +1,142 @@
 <?php
 /**
- * Storage Helper — support multi-server + backward compat kode lama
+ * Storage Helper — HTTP-based, data di playdata.vidshare.my.id
  * File: includes/storage.php
  *
  * ════════════════════════════════════════════════════════════════
- * FORMAT KODE
+ * ARSITEKTUR
+ * ════════════════════════════════════════════════════════════════
+ *
+ *   play.vidshare.my.id  (Vercel — PHP)
+ *     ↓ GET  /data/{filename}   → baca file JSON
+ *     ↓ PUT  /data/{filename}   → tulis/update file JSON
+ *     ↓ GET  /list              → list semua file JSON
+ *   playdata.vidshare.my.id  (VPS — REST API)
+ *
+ * ════════════════════════════════════════════════════════════════
+ * FORMAT KODE (tidak berubah)
  * ════════════════════════════════════════════════════════════════
  *
  * BARU (15 karakter):
  *   [2 char server][2 char bulan][1 char file-ke][10 char random]
  *
- *   Server prefix:
- *     s1 = Server 1
- *     s2 = Server 2
- *     s3 = Server 3
- *
- *   Bulan encoding (sama seperti sebelumnya):
- *     1a=Jan 2f=Feb 3m=Mar 4a=Apr 5m=Mei 6j=Jun
- *     7j=Jul 8a=Agt 9s=Sep 0o=Okt xn=Nov xd=Des
- *
- *   File-ke (1 char base-36): 1-9, a-z
- *
- *   Contoh: s11a1abcdefghij
- *            ^^ ^^ ^ ^^^^^^^^^^
- *            s1 Jan f1  random
- *
  * LAMA-13 (13 karakter):
  *   [2 char bulan][1 char file-ke][10 char random]
- *   → tidak mengandung info server, fallback scan file lama
  *
  * LAMA-8 (8 karakter):
  *   alfanumerik acak murni
- *   → fallback scan semua file JSON
- *
- * ════════════════════════════════════════════════════════════════
- * STRUKTUR FILE
- * ════════════════════════════════════════════════════════════════
- *
- *   data/
- *     s1_videos_2025_01_1.json   ← server 1, Januari 2025, file ke-1
- *     s1_videos_2025_01_2.json
- *     s2_videos_2025_01_1.json   ← server 2, Januari 2025, file ke-1
- *     s3_videos_2025_01_1.json   ← server 3, Januari 2025, file ke-1
- *     videos_2025_01_1.json      ← file lama (kode 13 char, tanpa prefix server)
- *
- * ════════════════════════════════════════════════════════════════
- * LOOKUP
- * ════════════════════════════════════════════════════════════════
- *
- *   Kode baru (15 char) → O(1): decode server+bulan+fileNum → buka 1 file
- *   Kode lama-13        → O(1) per file lama (decode bulan+fileNum, scan file lama)
- *   Kode lama-8         → scan semua file (backward compat)
- *
- * ════════════════════════════════════════════════════════════════
- * NEXT / PREV
- * ════════════════════════════════════════════════════════════════
- *
- *   Kode baru → hanya baca file dengan prefix server yang sama
- *   Kode lama → baca semua file lama (tanpa prefix server)
  */
 
-define('DATA_DIR',        __DIR__ . '/../data');
-define('FILE_SIZE_LIMIT', 512 * 1024); // 512 KB per file
+define('DATA_API_BASE',   'https://playdata.vidshare.my.id');
+define('DATA_API_SECRET', 'xK9#mP2$qL7@nR4!');
+define('FILE_SIZE_LIMIT', 512 * 1024);  // 512 KB per file (perkiraan, dicek dari API)
 define('CODE_RANDOM_LEN', 10);
+
+// ════════════════════════════════════════════════════
+// HTTP CLIENT
+// ════════════════════════════════════════════════════
+
+/**
+ * GET /data/{filename} → array data JSON, atau [] jika tidak ada.
+ */
+function apiGetFile(string $filename): array
+{
+    $url = DATA_API_BASE . '/data/' . rawurlencode($filename);
+    $result = apiRequest('GET', $url);
+    if ($result['status'] === 404) return [];
+    if ($result['status'] !== 200) return [];
+    $data = json_decode($result['body'], true);
+    return is_array($data) ? $data : [];
+}
+
+/**
+ * PUT /data/{filename} → tulis/replace isi file JSON.
+ * Return true jika berhasil.
+ */
+function apiPutFile(string $filename, array $data): bool
+{
+    $url  = DATA_API_BASE . '/data/' . rawurlencode($filename);
+    $body = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($body === false) return false;
+    $result = apiRequest('PUT', $url, $body);
+    return $result['status'] === 200 || $result['status'] === 201;
+}
+
+/**
+ * HEAD /data/{filename} → cek apakah file ada + ukurannya.
+ * Return ['exists' => bool, 'size' => int]
+ */
+function apiStatFile(string $filename): array
+{
+    $url    = DATA_API_BASE . '/data/' . rawurlencode($filename);
+    $result = apiRequest('HEAD', $url);
+    return [
+        'exists' => $result['status'] === 200,
+        'size'   => (int) ($result['headers']['content-length'] ?? 0),
+    ];
+}
+
+/**
+ * GET /list → list semua filename JSON yang tersedia.
+ * Return array of string filename.
+ */
+function apiListFiles(): array
+{
+    $url    = DATA_API_BASE . '/list';
+    $result = apiRequest('GET', $url);
+    if ($result['status'] !== 200) return [];
+    $data = json_decode($result['body'], true);
+    return is_array($data['files'] ?? null) ? $data['files'] : [];
+}
+
+/**
+ * HTTP request ke playdata API.
+ * Semua request disertai header Authorization.
+ */
+function apiRequest(string $method, string $url, string $body = ''): array
+{
+    $headers = [
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . DATA_API_SECRET,
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST  => $method,
+        CURLOPT_HTTPHEADER     => $headers,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HEADER         => true,
+    ]);
+
+    if ($body !== '') {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    }
+
+    $response   = curl_exec($ch);
+    $statusCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+
+    if ($response === false) {
+        return ['status' => 0, 'headers' => [], 'body' => ''];
+    }
+
+    $rawHeaders  = substr($response, 0, $headerSize);
+    $responseBody = substr($response, $headerSize);
+
+    // Parse headers sederhana
+    $headers = [];
+    foreach (explode("\r\n", $rawHeaders) as $line) {
+        if (str_contains($line, ':')) {
+            [$k, $v] = explode(':', $line, 2);
+            $headers[strtolower(trim($k))] = trim($v);
+        }
+    }
+
+    return ['status' => $statusCode, 'headers' => $headers, 'body' => $responseBody];
+}
 
 // ════════════════════════════════════════════════════
 // SERVER PREFIX
@@ -70,9 +144,6 @@ define('CODE_RANDOM_LEN', 10);
 
 const VALID_SERVERS = ['s1', 's2', 's3'];
 
-/**
- * Validasi server prefix.
- */
 function isValidServer(string $srv): bool
 {
     return in_array($srv, VALID_SERVERS, true);
@@ -122,10 +193,6 @@ function decodeFileNum(string $c): int
 // DETEKSI FORMAT KODE
 // ════════════════════════════════════════════════════
 
-/**
- * Kode baru: 15 char, dimulai dengan server prefix valid.
- * [s1|s2|s3] + [2 bulan] + [1 file-ke] + [10 random]
- */
 function isNewFormatCode(string $code): bool
 {
     if (strlen($code) !== 15) return false;
@@ -137,10 +204,6 @@ function isNewFormatCode(string $code): bool
     return decodeFileNum($fileCh) >= 1;
 }
 
-/**
- * Kode lama-13: 13 char, [2 bulan][1 file-ke][10 random]
- * TIDAK dimulai dengan server prefix.
- */
 function isLegacy13Code(string $code): bool
 {
     if (strlen($code) !== 13) return false;
@@ -150,37 +213,26 @@ function isLegacy13Code(string $code): bool
     return decodeFileNum($fileCh) >= 1;
 }
 
-/**
- * Kode lama-8: 8 char alfanumerik.
- */
 function isLegacy8Code(string $code): bool
 {
     return strlen($code) === 8 && ctype_alnum($code);
 }
 
 // ════════════════════════════════════════════════════
-// FILE PATH
+// FILENAME BUILDER (menggantikan path lokal)
 // ════════════════════════════════════════════════════
 
-/**
- * Path file untuk kode BARU (dengan server prefix).
- *   data/s1_videos_2025_01_1.json
- */
-function buildNewFilePath(string $server, int $year, int $month, int $fileNum): string
+function buildNewFilename(string $server, int $year, int $month, int $fileNum): string
 {
-    return DATA_DIR . '/' . $server . '_videos_'
+    return $server . '_videos_'
         . $year . '_'
         . str_pad($month, 2, '0', STR_PAD_LEFT) . '_'
         . $fileNum . '.json';
 }
 
-/**
- * Path file untuk kode LAMA (tanpa server prefix).
- *   data/videos_2025_01_1.json
- */
-function buildLegacyFilePath(int $year, int $month, int $fileNum): string
+function buildLegacyFilename(int $year, int $month, int $fileNum): string
 {
-    return DATA_DIR . '/videos_'
+    return 'videos_'
         . $year . '_'
         . str_pad($month, 2, '0', STR_PAD_LEFT) . '_'
         . $fileNum . '.json';
@@ -190,10 +242,6 @@ function buildLegacyFilePath(int $year, int $month, int $fileNum): string
 // DECODE KODE → INFO FILE
 // ════════════════════════════════════════════════════
 
-/**
- * Decode kode BARU (15 char) → ['server','year','month','fileNum','path']
- * Cari mundur maks 3 tahun jika file belum ada.
- */
 function decodeNewCode(string $code): ?array
 {
     $server  = substr($code, 0, 2);
@@ -203,28 +251,25 @@ function decodeNewCode(string $code): ?array
 
     $currentYear = (int) date('Y');
     for ($i = 0; $i <= 3; $i++) {
-        $year = $currentYear - $i;
-        $path = buildNewFilePath($server, $year, $month, $fileNum);
-        if (file_exists($path)) {
-            return compact('server', 'year', 'month', 'fileNum', 'path');
+        $year     = $currentYear - $i;
+        $filename = buildNewFilename($server, $year, $month, $fileNum);
+        $stat     = apiStatFile($filename);
+        if ($stat['exists']) {
+            return compact('server', 'year', 'month', 'fileNum', 'filename');
         }
     }
 
     // File belum ada → default tahun sekarang
     $year = $currentYear;
     return [
-        'server'  => $server,
-        'year'    => $year,
-        'month'   => $month,
-        'fileNum' => $fileNum,
-        'path'    => buildNewFilePath($server, $year, $month, $fileNum),
+        'server'   => $server,
+        'year'     => $year,
+        'month'    => $month,
+        'fileNum'  => $fileNum,
+        'filename' => buildNewFilename($server, $year, $month, $fileNum),
     ];
 }
 
-/**
- * Decode kode LAMA-13 (13 char) → ['year','month','fileNum','path']
- * Scan file lama (tanpa prefix server).
- */
 function decodeLegacy13Code(string $code): ?array
 {
     $month   = decodeMonth(substr($code, 0, 2));
@@ -233,19 +278,20 @@ function decodeLegacy13Code(string $code): ?array
 
     $currentYear = (int) date('Y');
     for ($i = 0; $i <= 3; $i++) {
-        $year = $currentYear - $i;
-        $path = buildLegacyFilePath($year, $month, $fileNum);
-        if (file_exists($path)) {
-            return compact('year', 'month', 'fileNum', 'path');
+        $year     = $currentYear - $i;
+        $filename = buildLegacyFilename($year, $month, $fileNum);
+        $stat     = apiStatFile($filename);
+        if ($stat['exists']) {
+            return compact('year', 'month', 'fileNum', 'filename');
         }
     }
 
     $year = $currentYear;
     return [
-        'year'    => $year,
-        'month'   => $month,
-        'fileNum' => $fileNum,
-        'path'    => buildLegacyFilePath($year, $month, $fileNum),
+        'year'     => $year,
+        'month'    => $month,
+        'fileNum'  => $fileNum,
+        'filename' => buildLegacyFilename($year, $month, $fileNum),
     ];
 }
 
@@ -253,51 +299,31 @@ function decodeLegacy13Code(string $code): ?array
 // FILE AKTIF (untuk write baru)
 // ════════════════════════════════════════════════════
 
-/**
- * File aktif bulan ini untuk server tertentu.
- * Jika sudah > FILE_SIZE_LIMIT → naikkan nomor file.
- *
- * @param  string $server  'server1' | 'server2' | 'server3' (nilai dari caller)
- *                         atau 's1' | 's2' | 's3' (prefix storage)
- */
 function getActiveFile(string $server = 's1'): array
 {
-    if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
-
-    // Normalisasi: terima 'server1'/'server2'/'server3' atau 's1'/'s2'/'s3'
-    $srv = normalizeServerPrefix($server);
-
+    $srv   = normalizeServerPrefix($server);
     $year  = (int) date('Y');
     $month = (int) date('n');
 
     for ($num = 1; $num <= 35; $num++) {
-        $path = buildNewFilePath($srv, $year, $month, $num);
-        if (!file_exists($path) || filesize($path) < FILE_SIZE_LIMIT) {
-            return [
-                'path'    => $path,
-                'year'    => $year,
-                'month'   => $month,
-                'fileNum' => $num,
-                'server'  => $srv,
-            ];
+        $filename = buildNewFilename($srv, $year, $month, $num);
+        $stat     = apiStatFile($filename);
+        if (!$stat['exists'] || $stat['size'] < FILE_SIZE_LIMIT) {
+            return compact('filename', 'year', 'month', 'num') + ['server' => $srv, 'fileNum' => $num];
         }
     }
 
-    // Fallback: tetap pakai file ke-35
-    $path = buildNewFilePath($srv, $year, $month, 35);
+    // Fallback: file ke-35
+    $filename = buildNewFilename($srv, $year, $month, 35);
     return [
-        'path'    => $path,
-        'year'    => $year,
-        'month'   => $month,
-        'fileNum' => 35,
-        'server'  => $srv,
+        'filename' => $filename,
+        'year'     => $year,
+        'month'    => $month,
+        'fileNum'  => 35,
+        'server'   => $srv,
     ];
 }
 
-/**
- * Normalisasi input server → prefix 2 char (s1/s2/s3).
- * Menerima: 's1','s2','s3','server1','server2','server3','1','2','3'
- */
 function normalizeServerPrefix(string $input): string
 {
     $input = strtolower(trim($input));
@@ -310,94 +336,62 @@ function normalizeServerPrefix(string $input): string
 }
 
 // ════════════════════════════════════════════════════
-// JSON READ / WRITE (aman)
+// LOAD / WRITE (via API, menggantikan loadFile / safeWriteFile)
 // ════════════════════════════════════════════════════
 
-function loadFile(string $path): array
+function loadFile(string $filename): array
 {
-    if (!file_exists($path)) return [];
-    $raw = file_get_contents($path);
-    if ($raw === false || trim($raw) === '') return [];
-    $data = json_decode($raw, true);
-    return is_array($data) ? $data : [];
+    return apiGetFile($filename);
 }
 
-function safeWriteFile(string $path, array $data): bool
+function safeWriteFile(string $filename, array $data): bool
 {
-    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if ($json === false) return false;
-
-    $dir = dirname($path);
-    if (!is_dir($dir)) mkdir($dir, 0755, true);
-
-    $tmp = $path . '.tmp.' . getmypid();
-    if (file_put_contents($tmp, $json, LOCK_EX) === false) {
-        @unlink($tmp);
-        return false;
-    }
-
-    $verify = json_decode((string) file_get_contents($tmp), true);
-    if (!is_array($verify)) { @unlink($tmp); return false; }
-    if (!rename($tmp, $path)) { @unlink($tmp); return false; }
-    return true;
+    return apiPutFile($filename, $data);
 }
 
-/**
- * Semua file data baru (dengan prefix server), diurutkan terbaru duluan.
- */
+// ════════════════════════════════════════════════════
+// LIST FILE (via API, menggantikan glob)
+// ════════════════════════════════════════════════════
+
 function getAllNewDataFiles(): array
 {
-    if (!is_dir(DATA_DIR)) return [];
-    $files = [];
-    foreach (VALID_SERVERS as $srv) {
-        $found = glob(DATA_DIR . '/' . $srv . '_videos_*.json') ?: [];
-        $files = array_merge($files, $found);
-    }
+    $all = apiListFiles();
+    $files = array_filter($all, function ($f) {
+        foreach (VALID_SERVERS as $srv) {
+            if (str_starts_with($f, $srv . '_videos_')) return true;
+        }
+        return false;
+    });
     rsort($files);
-    return $files;
+    return array_values($files);
 }
 
-/**
- * File data lama (tanpa prefix server) — untuk backward compat.
- */
 function getAllLegacyDataFiles(): array
 {
-    if (!is_dir(DATA_DIR)) return [];
-    // Cocokkan hanya file yang TIDAK diawali prefix server
-    $all   = glob(DATA_DIR . '/videos_*.json') ?: [];
-    rsort($all);
-    return $all;
+    $all = apiListFiles();
+    $files = array_filter($all, fn($f) => str_starts_with($f, 'videos_'));
+    rsort($files);
+    return array_values($files);
 }
 
-/**
- * Semua file data (baru + lama), diurutkan terbaru duluan.
- */
 function getAllDataFiles(): array
 {
     return array_merge(getAllNewDataFiles(), getAllLegacyDataFiles());
 }
 
-/**
- * File data untuk server tertentu saja, diurutkan terbaru duluan.
- */
 function getServerDataFiles(string $server): array
 {
-    if (!is_dir(DATA_DIR)) return [];
-    $srv   = normalizeServerPrefix($server);
-    $files = glob(DATA_DIR . '/' . $srv . '_videos_*.json') ?: [];
+    $srv = normalizeServerPrefix($server);
+    $all = apiListFiles();
+    $files = array_filter($all, fn($f) => str_starts_with($f, $srv . '_videos_'));
     rsort($files);
-    return $files;
+    return array_values($files);
 }
 
 // ════════════════════════════════════════════════════
-// PUBLIC API
+// PUBLIC API (logika tidak berubah, hanya path → filename)
 // ════════════════════════════════════════════════════
 
-/**
- * Generate kode unik 15 karakter (format baru, dengan server prefix).
- *
- * @param  string $server  's1' | 's2' | 's3' | 'server1' | 'server2' | 'server3' | '1' | '2' | '3'
- */
 function generateUniqueCode(string $server = 's1'): string
 {
     $srv    = normalizeServerPrefix($server);
@@ -413,73 +407,53 @@ function generateUniqueCode(string $server = 's1'): string
         for ($i = 0; $i < CODE_RANDOM_LEN; $i++) {
             $random .= $charset[random_int(0, $max)];
         }
-        $code = $srv . $monthPfx . $filePfx . $random; // 2+2+1+10 = 15 char
+        $code = $srv . $monthPfx . $filePfx . $random;
         if (!codeExists($code)) return $code;
     }
 
     throw new RuntimeException('Tidak bisa generate kode unik setelah 100 percobaan.');
 }
 
-/**
- * Cek apakah kode sudah ada.
- */
 function codeExists(string $code): bool
 {
     if (isNewFormatCode($code)) {
         $info = decodeNewCode($code);
-        if (!$info || !file_exists($info['path'])) return false;
-        return isset(loadFile($info['path'])[$code]);
+        if (!$info) return false;
+        $stat = apiStatFile($info['filename']);
+        if (!$stat['exists']) return false;
+        return isset(loadFile($info['filename'])[$code]);
     }
 
     if (isLegacy13Code($code)) {
         $info = decodeLegacy13Code($code);
-        if (!$info || !file_exists($info['path'])) return false;
-        return isset(loadFile($info['path'])[$code]);
+        if (!$info) return false;
+        $stat = apiStatFile($info['filename']);
+        if (!$stat['exists']) return false;
+        return isset(loadFile($info['filename'])[$code]);
     }
 
-    // Kode lama-8: scan semua file
-    foreach (getAllDataFiles() as $file) {
-        if (isset(loadFile($file)[$code])) return true;
+    foreach (getAllDataFiles() as $filename) {
+        if (isset(loadFile($filename)[$code])) return true;
     }
     return false;
 }
 
-/**
- * Simpan video baru.
- *
- * @param  string $code    Kode unik (hasil generateUniqueCode)
- * @param  string $url     URL video
- * @param  string $title   Judul video
- * @return array           Entry yang disimpan
- */
 function saveVideo(string $code, string $url, string $title = 'Untitled'): array
 {
-    // Tentukan path file tujuan
     if (isNewFormatCode($code)) {
         $info = decodeNewCode($code);
         if (!$info) throw new InvalidArgumentException('Format kode tidak valid: ' . $code);
-        $path = $info['path'];
+        $filename = $info['filename'];
     } elseif (isLegacy13Code($code)) {
-        $info = decodeLegacy13Code($code);
-        $path = $info ? $info['path'] : getActiveFile()['path'];
+        $info     = decodeLegacy13Code($code);
+        $filename = $info ? $info['filename'] : getActiveFile()['filename'];
     } else {
-        // Kode lama-8: simpan ke file aktif s1 sebagai fallback
-        $path = getActiveFile('s1')['path'];
+        $filename = getActiveFile('s1')['filename'];
     }
 
-    if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
-
-    $fp = fopen($path, 'c+');
-    if (!$fp || !flock($fp, LOCK_EX)) {
-        if ($fp) fclose($fp);
-        throw new RuntimeException('Tidak bisa mengunci file storage: ' . $path);
-    }
-
-    $raw    = stream_get_contents($fp);
-    $videos = json_decode($raw, true);
-    if (!is_array($videos)) $videos = [];
-
-    $entry = [
+    // Baca data existing, tambah entry baru, tulis balik
+    $videos        = loadFile($filename);
+    $entry         = [
         'code'       => $code,
         'url'        => $url,
         'title'      => $title,
@@ -487,56 +461,42 @@ function saveVideo(string $code, string $url, string $title = 'Untitled'): array
     ];
     $videos[$code] = $entry;
 
-    $json = json_encode($videos, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if ($json !== false) {
-        ftruncate($fp, 0);
-        rewind($fp);
-        fwrite($fp, $json);
+    if (!safeWriteFile($filename, $videos)) {
+        throw new RuntimeException('Gagal menyimpan data ke playdata: ' . $filename);
     }
-
-    flock($fp, LOCK_UN);
-    fclose($fp);
 
     return $entry;
 }
 
-/**
- * Ambil video by code.
- *
- * Kode baru (15 char) → O(1): decode server+bulan+fileNum → buka 1 file
- * Kode lama-13        → decode bulan+fileNum → buka file lama
- * Kode lama-8         → scan semua file
- */
 function getVideoByCode(string $code): ?array
 {
     if (isNewFormatCode($code)) {
         $info = decodeNewCode($code);
-        if (!$info || !file_exists($info['path'])) return null;
-        return loadFile($info['path'])[$code] ?? null;
+        if (!$info) return null;
+        $stat = apiStatFile($info['filename']);
+        if (!$stat['exists']) return null;
+        return loadFile($info['filename'])[$code] ?? null;
     }
 
     if (isLegacy13Code($code)) {
         $info = decodeLegacy13Code($code);
-        if (!$info || !file_exists($info['path'])) return null;
-        return loadFile($info['path'])[$code] ?? null;
+        if (!$info) return null;
+        $stat = apiStatFile($info['filename']);
+        if (!$stat['exists']) return null;
+        return loadFile($info['filename'])[$code] ?? null;
     }
 
-    // Kode lama-8: scan semua file (baru + lama)
-    foreach (getAllDataFiles() as $file) {
-        $data = loadFile($file);
+    foreach (getAllDataFiles() as $filename) {
+        $data = loadFile($filename);
         if (isset($data[$code])) return $data[$code];
     }
     return null;
 }
 
-/**
- * Cek duplikat URL.
- * Scan semua file (baru + lama).
- */
 function getVideoByUrl(string $url): ?array
 {
-    foreach (getAllDataFiles() as $file) {
-        $data = loadFile($file);
+    foreach (getAllDataFiles() as $filename) {
+        $data = loadFile($filename);
         foreach ($data as $entry) {
             if (($entry['url'] ?? '') === $url) return $entry;
         }
@@ -548,30 +508,19 @@ function getVideoByUrl(string $url): ?array
 // ADJACENT VIDEOS (prev / next)
 // ════════════════════════════════════════════════════
 
-/**
- * Ambil video sebelum dan sesudah berdasarkan created_at.
- *
- * Strategi:
- *   - Kode baru (15 char): hanya baca file server yang sama
- *   - Kode lama (8/13 char): hanya baca file lama (tanpa prefix server)
- *
- * Ini memastikan next/prev tidak melompat antar server.
- */
 function getAdjacentVideos(string $code): array
 {
     $all = [];
 
     if (isNewFormatCode($code)) {
-        // Ambil hanya dari server yang sama
-        $server = substr($code, 0, 2); // 's1' / 's2' / 's3'
+        $server = substr($code, 0, 2);
         $files  = getServerDataFiles($server);
     } else {
-        // Kode lama: ambil hanya dari file lama (tanpa prefix server)
         $files = getAllLegacyDataFiles();
     }
 
-    foreach ($files as $file) {
-        $data = loadFile($file);
+    foreach ($files as $filename) {
+        $data = loadFile($filename);
         foreach ($data as $entry) {
             if (!isset($entry['code'], $entry['created_at'])) continue;
             $all[] = [
@@ -584,10 +533,8 @@ function getAdjacentVideos(string $code): array
 
     if (empty($all)) return ['prev' => null, 'next' => null];
 
-    // Sort ascending by created_at
     usort($all, fn($a, $b) => strcmp($a['created_at'], $b['created_at']));
 
-    // Cari posisi video saat ini
     $pos   = null;
     $total = count($all);
     for ($i = 0; $i < $total; $i++) {
@@ -596,8 +543,8 @@ function getAdjacentVideos(string $code): array
 
     if ($pos === null) return ['prev' => null, 'next' => null];
 
-    $prev = $pos > 0           ? ['code' => $all[$pos-1]['code'], 'title' => $all[$pos-1]['title']] : null;
-    $next = $pos < $total - 1  ? ['code' => $all[$pos+1]['code'], 'title' => $all[$pos+1]['title']] : null;
+    $prev = $pos > 0          ? ['code' => $all[$pos-1]['code'], 'title' => $all[$pos-1]['title']] : null;
+    $next = $pos < $total - 1 ? ['code' => $all[$pos+1]['code'], 'title' => $all[$pos+1]['title']] : null;
 
     return ['prev' => $prev, 'next' => $next];
 }
@@ -613,20 +560,17 @@ function getStorageInfo(): array
     $allFiles    = array_merge($newFiles, $legacyFiles);
 
     $totalEntry = 0;
-    $totalSize  = 0;
     $detail     = [];
 
-    foreach ($allFiles as $file) {
-        $data  = loadFile($file);
+    foreach ($allFiles as $filename) {
+        $data  = loadFile($filename);
         $count = count($data);
-        $size  = filesize($file);
         $totalEntry += $count;
-        $totalSize  += $size;
 
         $newCodes    = 0;
         $legacy13    = 0;
         $legacy8     = 0;
-        $serverCount = ['s1'=>0,'s2'=>0,'s3'=>0];
+        $serverCount = ['s1' => 0, 's2' => 0, 's3' => 0];
 
         foreach (array_keys($data) as $c) {
             if (isNewFormatCode($c)) {
@@ -640,23 +584,25 @@ function getStorageInfo(): array
             }
         }
 
+        $stat = apiStatFile($filename);
+
         $detail[] = [
-            'file'       => basename($file),
-            'entries'    => $count,
-            'new_codes'  => $newCodes,
-            'servers'    => $serverCount,
-            'legacy_13'  => $legacy13,
-            'legacy_8'   => $legacy8,
-            'size'       => round($size / 1024, 1) . ' KB',
+            'file'      => $filename,
+            'entries'   => $count,
+            'new_codes' => $newCodes,
+            'servers'   => $serverCount,
+            'legacy_13' => $legacy13,
+            'legacy_8'  => $legacy8,
+            'size'      => $stat['exists'] ? round($stat['size'] / 1024, 1) . ' KB' : '?',
         ];
     }
 
     return [
+        'data_api'      => DATA_API_BASE,
         'total_files'   => count($allFiles),
         'new_files'     => count($newFiles),
         'legacy_files'  => count($legacyFiles),
         'total_entries' => $totalEntry,
-        'total_size'    => round($totalSize / 1024, 1) . ' KB',
         'files'         => $detail,
     ];
 }
