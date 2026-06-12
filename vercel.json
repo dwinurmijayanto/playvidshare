@@ -56,6 +56,18 @@
       "dest": "/config.php"
     },
     {
+      "src": "/([a-zA-Z0-9]{8})",
+      "dest": "/router.php"
+    },
+    {
+      "src": "/([a-zA-Z0-9]{13})",
+      "dest": "/router.php"
+    },
+    {
+      "src": "/([a-zA-Z0-9]{15})",
+      "dest": "/router.php"
+    },
+    {
       "src": "/",
       "dest": "/index.php"
     },
