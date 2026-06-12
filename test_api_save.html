@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Test api_save.php</title>
+<style>
+body { background:#0e1117; color:#eef1f8; font-family:monospace; padding:2rem; max-width:700px; margin:0 auto; }
+h2 { color:#e8ff47; margin-bottom:1rem; }
+label { display:block; font-size:.8rem; color:#8890a4; margin:1rem 0 .3rem; text-transform:uppercase; }
+input, select { width:100%; padding:.6rem .8rem; background:#141820; border:1px solid #2a3347; border-radius:6px; color:#eef1f8; font-family:monospace; font-size:.9rem; box-sizing:border-box; }
+button { margin-top:1.2rem; padding:.7rem 1.5rem; background:#e8ff47; border:none; border-radius:8px; color:#080a0f; font-family:monospace; font-weight:700; font-size:.95rem; cursor:pointer; }
+button:hover { opacity:.85; }
+pre { margin-top:1.5rem; background:#141820; border:1px solid #2a3347; border-radius:8px; padding:1rem; font-size:.82rem; white-space:pre-wrap; word-break:break-all; min-height:60px; }
+.ok  { border-color:rgba(71,255,178,.4); color:#47ffb2; }
+.err { border-color:rgba(255,87,87,.3);  color:#ff5757; }
+.info { font-size:.75rem; color:#5a6177; margin-top:.4rem; }
+</style>
+</head>
+<body>
+<h2>🧪 Test api_save.php</h2>
+
+<label>Endpoint</label>
+<input id="endpoint" value="https://play.vidshare.my.id/api_save.php">
+
+<label>Server</label>
+<select id="server">
+  <option value="s1">s1 — Server 1</option>
+  <option value="s2">s2 — Server 2</option>
+  <option value="s3">s3 — Server 3</option>
+</select>
+
+<label>CDN URL (gunakan URL nyata dari CDN)</label>
+<input id="cdnUrl" value="https://cdn.videy.co/test123.mp4" placeholder="https://cdn.videy.co/xxxxx.mp4">
+
+<label>Title (opsional)</label>
+<input id="title" value="Test Video">
+
+<button onclick="doTest()">▶ POST ke api_save.php</button>
+<p class="info">Buka DevTools (F12 → Console) untuk detail jika ada error CORS.</p>
+
+<pre id="result">Klik tombol untuk mulai test…</pre>
+
+<script>
+async function doTest() {
+  const endpoint = document.getElementById('endpoint').value.trim();
+  const server   = document.getElementById('server').value;
+  const cdnUrl   = document.getElementById('cdnUrl').value.trim();
+  const title    = document.getElementById('title').value.trim();
+  const out      = document.getElementById('result');
+
+  out.className = '';
+  out.textContent = '⏳ Mengirim request…';
+
+  const fd = new FormData();
+  fd.append('server',  server);
+  fd.append('cdn_url', cdnUrl);
+  fd.append('title',   title);
+
+  try {
+    const res  = await fetch(endpoint, { method: 'POST', body: fd });
+    const text = await res.text();
+
+    // Coba parse JSON
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch(e) {
+      out.className = 'err';
+      out.textContent = '❌ Response BUKAN JSON!\n\nRaw response:\n' + text.slice(0, 1000);
+      return;
+    }
+
+    out.className = parsed.ok ? 'ok' : 'err';
+    out.textContent = (parsed.ok ? '✅ SUKSES!\n\n' : '❌ GAGAL!\n\n')
+      + JSON.stringify(parsed, null, 2);
+
+  } catch(err) {
+    out.className = 'err';
+    out.textContent = '❌ Fetch error (CORS / network):\n' + err.message
+      + '\n\nPastikan api_save.php punya header:\nAccess-Control-Allow-Origin: *';
+  }
+}
+</script>
+</body>
+</html>

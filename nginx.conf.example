@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────
+#  Nginx Configuration — VidShare
+#  Letakkan di dalam block server {} Anda
+# ──────────────────────────────────────────────
+
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name play.vidshare.my.id;
+    root        /var/www/vidshare;
+    index       index.php;
+
+    # Redirect HTTP → HTTPS (opsional)
+    # return 301 https://$host$request_uri;
+
+    # Blokir akses langsung ke folder data
+    location ^~ /data/ {
+        deny all;
+        return 404;
+    }
+
+    # Route semua request melalui router.php
+    location / {
+        try_files $uri $uri/ /router.php?$query_string;
+    }
+
+    # PHP-FPM
+    location ~ \.php$ {
+        include        fastcgi_params;
+        fastcgi_pass   unix:/run/php/php8.2-fpm.sock;  # sesuaikan versi PHP
+        fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_index  index.php;
+    }
+
+    # Keamanan
+    location ~ /\. {
+        deny all;
+    }
+}
+
+# ──────────────────────────────────────────────
+#  Untuk HTTPS dengan Let's Encrypt:
+#  sudo certbot --nginx -d play.vidshare.my.id
+# ──────────────────────────────────────────────
