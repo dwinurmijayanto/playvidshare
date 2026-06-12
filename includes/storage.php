@@ -9,7 +9,7 @@
  *
  *   play.vidshare.my.id  (Vercel — PHP)
  *     ↓ GET  /data/{filename}   → baca file JSON
- *     ↓ PUT  /data/{filename}   → tulis/update file JSON
+ *     ↓ POST /data/{filename}   → tulis/update file JSON
  *     ↓ GET  /list              → list semua file JSON
  *   playdata.vidshare.my.id  (VPS — REST API)
  *
@@ -50,7 +50,7 @@ function apiGetFile(string $filename): array
 }
 
 /**
- * PUT /data/{filename} → tulis/replace isi file JSON.
+ * POST /data/{filename} → tulis/replace isi file JSON.
  * Return true jika berhasil.
  */
 function apiPutFile(string $filename, array $data): bool
@@ -58,7 +58,7 @@ function apiPutFile(string $filename, array $data): bool
     $url  = DATA_API_BASE . '/data/' . rawurlencode($filename);
     $body = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($body === false) return false;
-    $result = apiRequest('PUT', $url, $body);
+    $result = apiRequest('POST', $url, $body);
     if ($result['status'] === 200 || $result['status'] === 201) return true;
 
     $detail = $result['curl_error'] ?? $result['body'] ?? '';
