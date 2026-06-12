@@ -59,7 +59,12 @@ function apiPutFile(string $filename, array $data): bool
     $body = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($body === false) return false;
     $result = apiRequest('PUT', $url, $body);
-    return $result['status'] === 200 || $result['status'] === 201;
+    if ($result['status'] === 200 || $result['status'] === 201) return true;
+
+    $detail = $result['curl_error'] ?? $result['body'] ?? '';
+    throw new RuntimeException(
+        "apiPutFile gagal [{$filename}] — HTTP {$result['status']}: {$detail}"
+    );
 }
 
 /**
@@ -115,12 +120,13 @@ function apiRequest(string $method, string $url, string $body = ''): array
     }
 
     $response   = curl_exec($ch);
+    $curlError  = curl_error($ch);
     $statusCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-    curl_close($ch);
+    // curl_close() tidak dipanggil — deprecated sejak PHP 8.5, no-op sejak PHP 8.0
 
     if ($response === false) {
-        return ['status' => 0, 'headers' => [], 'body' => ''];
+        return ['status' => 0, 'headers' => [], 'body' => '', 'curl_error' => $curlError];
     }
 
     $rawHeaders  = substr($response, 0, $headerSize);
@@ -461,9 +467,7 @@ function saveVideo(string $code, string $url, string $title = 'Untitled'): array
     ];
     $videos[$code] = $entry;
 
-    if (!safeWriteFile($filename, $videos)) {
-        throw new RuntimeException('Gagal menyimpan data ke playdata: ' . $filename);
-    }
+    safeWriteFile($filename, $videos); // exception dilempar langsung oleh apiPutFile jika gagal
 
     return $entry;
 }
